@@ -318,8 +318,9 @@ This project was built by directing AI coding agents; the split below is deliber
 - The full test suite (216 tests) and ruff lint/format checks pass locally; CI reruns them on every pull request and every push to main.
 - The demo transcript above is real output (excerpted) from running `scripts/demo_loop.py`
   against a freshly seeded platform.
-- The live-model eval results are from an actual run; the model identifiers, per-scenario
-  calls, and replies are recorded in `evals/RESULTS.md` and `evals/last_run.json`.
+- The live-model eval results are from an actual run; the per-scenario calls, tool
+  results, replies, and Claude Code version are recorded in `evals/RESULTS.md` and
+  `evals/last_run.json`; the model identifier is deliberately not recorded.
 - The published tree was checked for secrets, real personal data, and employer-specific
   content before release. It was first published as a fresh single-commit history; the
   earlier development history lives in a private repository.

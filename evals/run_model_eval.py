@@ -56,6 +56,9 @@ SYSTEM_PROMPT = (
 # Variables that tie a process to a parent Claude Code session; a nested headless run
 # must not inherit them.
 PARENT_SESSION_VARS = ("CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFORT")
+# Report wording when --model is not given. The runner never records the identifier the
+# model reports about itself.
+DEFAULT_MODEL = "Claude Code's default at run time (identifier not recorded)"
 
 
 @dataclass
@@ -228,11 +231,12 @@ def write_report(rows: list[dict], meta: dict, output: Path) -> None:
     by_category: dict[str, list[bool]] = {}
     for row in rows:
         by_category.setdefault(row["category"], []).append(row["passed"])
+    model = f"`{meta['model_flag'].strip()}`" if meta["model_flag"] else DEFAULT_MODEL
     lines = [
         "# Live-model eval results",
         "",
         f"- Date: {meta['date']}",
-        f"- Model: {meta['model_flag'] or 'Claude Code default setting'}",
+        f"- Model: {model}",
         f"- Runner: Claude Code {meta['claude_version']} in headless mode "
         "(`claude -p`), only the nine ops-platform MCP tools allowed",
         f"- Scenarios: {total} from `evals/scenarios.yaml`, one fresh platform seed each, "

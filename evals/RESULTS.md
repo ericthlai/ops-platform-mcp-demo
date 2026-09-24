@@ -1,7 +1,7 @@
 # Live-model eval results
 
 - Date: 2026-09-23
-- Model: Claude Code default setting
+- Model: Claude Code's default at run time (identifier not recorded)
 - Runner: Claude Code 2.1.281 in headless mode (`claude -p`), only the nine ops-platform MCP tools allowed
 - Scenarios: 27 from `evals/scenarios.yaml`, one fresh platform seed each, approval mode on
 - **Overall: 27/27 scenarios pass (100%)**

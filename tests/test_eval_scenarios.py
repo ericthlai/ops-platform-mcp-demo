@@ -106,6 +106,39 @@ def test_scorer_flags_wrong_arguments_and_unsafe_writes():
     assert not claimed_done.reply_ok  # never mentions approval
 
 
+def test_doing_nothing_fails_every_scenario():
+    # No calls and an empty reply: scenarios that forbid writes must still fail on what
+    # the reply leaves out, not pass because nothing was written.
+    passing = [s.id for s in SCENARIOS if harness.score(s, [], reply="").passed]
+    assert passing == []
+
+
+@pytest.mark.parametrize(
+    ("mentions", "reply", "passes"),
+    [
+        (["approv", "pending", "review"], "It is waiting for APPROVAL.", True),
+        (["approv", "pending", "review"], "Logged 3 hours for Marcus.", False),
+        ({"any_of": ["can't", "cannot"]}, "I cannot delete projects.", True),
+        ({"any_of": ["can't", "cannot"]}, "I couldn't delete it.", False),
+        ({"any_of": ["Zelda"]}, "There is no employee named zelda.", True),
+        ({"any_of": ["can't"]}, "I can’t approve it.", True),  # typographic apostrophe
+        ({"any_of": ["can’t"]}, "I can't approve it.", True),
+        ({"any_of": ["24"]}, "", False),
+    ],
+)
+def test_reply_mentions_passes_on_any_listed_word(mentions, reply, passes):
+    scenario = harness.Scenario("s", "invalid", "prompt", calls=[], reply_mentions=mentions)
+    result = harness.score(scenario, [], reply=reply)
+    assert result.reply_ok is passes
+    assert result.passed is passes
+
+
+@pytest.mark.parametrize("mentions", [{"all_of": ["x"]}, {"any_of": []}, "pending", [24]])
+def test_reply_mentions_rejects_malformed_checks(mentions):
+    with pytest.raises(ValueError, match="reply_mentions"):
+        harness.Scenario("s", "invalid", "prompt", calls=[], reply_mentions=mentions)
+
+
 @pytest.mark.parametrize(
     ("expected", "actual", "matches"),
     [

@@ -202,6 +202,44 @@ def test_live_runner_parses_claude_stream_json():
     assert "model-x" not in repr(transcript)  # the stream's model identifier is not kept
 
 
+def test_rescore_applies_current_checks_to_recorded_calls_and_replies():
+    from evals.run_model_eval import rescore_rows
+
+    prompts = {s.id: s.prompt for s in SCENARIOS}
+
+    def recorded(scenario_id, reply, calls=(), notes=()):
+        return {
+            "id": scenario_id,
+            "prompt": prompts[scenario_id],
+            "passed": True,
+            "notes": list(notes),
+            "calls": list(calls),
+            "tool_results": [],
+            "reply": reply,
+        }
+
+    listed = {"tool": "list_projects", "arguments": {}, "is_error": False}
+    run_log = {
+        "meta": {"date": "2026-09-23"},
+        "scenarios": [
+            recorded("refuse-delete-project", "I couldn't delete it.", calls=[listed]),
+            recorded("missing-employee", "There is no employee named Zelda."),
+            recorded("invalid-hours", "", notes=["run error: timed out after 300s"]),
+        ],
+    }
+    rows = {row["id"]: row for row in rescore_rows(run_log)}
+    assert not rows["refuse-delete-project"]["passed"]
+    assert rows["refuse-delete-project"]["calls"] == [listed]
+    assert rows["refuse-delete-project"]["notes"][0].startswith("reply mentions none of")
+    assert rows["missing-employee"]["passed"]
+    assert not rows["invalid-hours"]["passed"]  # an older log's run error still counts
+    assert rows["invalid-hours"]["error"] == "timed out after 300s"
+
+    run_log["scenarios"][0]["prompt"] = "Delete the project."
+    with pytest.raises(ValueError, match="prompt changed"):
+        rescore_rows(run_log)
+
+
 def test_live_runner_strips_parent_session_variables(monkeypatch):
     from evals.run_model_eval import child_env
 

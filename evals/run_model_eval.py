@@ -9,9 +9,14 @@ the platform, the MCP server, and the model all run locally.
     uv run python -m evals.run_model_eval                 # all scenarios
     uv run python -m evals.run_model_eval --only time-log-today invalid-hours
     uv run python -m evals.run_model_eval --model <alias>  # any `claude --model` value
+    uv run python -m evals.run_model_eval --rescore evals/last_run.json  # no model call
 
 Writes evals/RESULTS.md and evals/last_run.json (tool calls, results, and final replies).
 A full run makes one headless Claude Code call per scenario; --budget caps each call.
+
+--rescore applies the current checks (harness.py, scenarios.yaml) to the calls and replies
+recorded in a run log without calling any model, then rewrites the log and the report. The
+run's date is kept, and so are the notes a person wrote under the report's Notes heading.
 """
 
 import argparse
@@ -59,6 +64,8 @@ PARENT_SESSION_VARS = ("CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_PID", "CLAUDE_EFFOR
 # Report wording when --model is not given. The runner never records the identifier the
 # model reports about itself.
 DEFAULT_MODEL = "Claude Code's default at run time (identifier not recorded)"
+RUN_ERROR = "run error: "
+NOTES_HEADING = "## Notes"
 
 
 @dataclass
@@ -220,18 +227,91 @@ def sanitize(text: str, *paths: Path) -> str:
     return text
 
 
-def write_report(rows: list[dict], meta: dict, output: Path) -> None:
+def shell_join(parts: list[str]) -> str:
+    """A command line for the report; the quoting is for reading, not for one shell."""
+    return " ".join(json.dumps(p) if (" " in p or "<" in p or not p) else p for p in parts)
+
+
+def scenario_row(scenario: harness.Scenario, transcript: Transcript) -> dict:
+    """Score a transcript with the scenario's current checks. The report and last_run.json
+    are both built from these rows."""
+    result = harness.score(scenario, transcript.calls, transcript.reply)
+    notes = list(result.notes)
+    if transcript.error:
+        notes.insert(0, RUN_ERROR + transcript.error)
+    return {
+        "id": scenario.id,
+        "category": scenario.category,
+        "prompt": scenario.prompt,
+        "passed": result.passed and transcript.error is None,
+        "tools_ok": result.tools_ok,
+        "args_ok": result.args_ok,
+        "safety_ok": result.safety_ok,
+        "reply_ok": result.reply_ok,
+        "safety_applies": scenario.no_successful_writes,
+        "reply_applies": bool(harness.mention_options(scenario.reply_mentions)),
+        "notes": notes,
+        "error": transcript.error,
+        "calls": [vars(c) for c in transcript.calls],
+        "calls_md": [describe_call(c) for c in transcript.calls],
+        "tool_results": transcript.results,
+        "reply": transcript.reply,
+    }
+
+
+def recorded_transcript(row: dict) -> Transcript:
+    """What the model did in a recorded run: its calls, tool results, reply, and error."""
+    error = row.get("error")
+    if "error" not in row:  # logs from before rows kept the error on its own
+        prefixed = [note for note in row["notes"] if note.startswith(RUN_ERROR)]
+        error = prefixed[0].removeprefix(RUN_ERROR) if prefixed else None
+    return Transcript(
+        calls=[harness.ObservedCall(**call) for call in row["calls"]],
+        results=row["tool_results"],
+        reply=row["reply"],
+        error=error,
+    )
+
+
+def rescore_rows(run_log: dict) -> list[dict]:
+    """Apply the current checks to a recorded run's calls and replies. No model is called;
+    scenario dates render as on the day of the run."""
+    run_date = date.fromisoformat(run_log["meta"]["date"])
+    scenarios = {s.id: s for s in harness.load_scenarios(today=run_date)}
+    rows = []
+    for recorded in run_log["scenarios"]:
+        scenario = scenarios.get(recorded["id"])
+        if scenario is None or scenario.prompt != recorded["prompt"]:
+            raise ValueError(
+                f"{recorded['id']}: the scenario was removed or its prompt changed after "
+                "the run, so the recorded reply no longer answers it; run the model again"
+            )
+        rows.append(scenario_row(scenario, recorded_transcript(recorded)))
+    return rows
+
+
+def existing_notes(report: Path) -> str:
+    """The hand-written section of a report, from its Notes heading to the end."""
+    text = report.read_text(encoding="utf-8") if report.exists() else ""
+    start = text.find("\n" + NOTES_HEADING)
+    return text[start + 1 :] if start != -1 else ""
+
+
+def render_report(rows: list[dict], meta: dict, notes: str = "") -> str:
     total = len(rows)
     passed = sum(row["passed"] for row in rows)
 
-    def tally(check: str, applies: str | None = None) -> str:
-        relevant = [row for row in rows if applies is None or row[applies]]
+    def tally(check: str, relevant: list[dict]) -> str:
         return f"{sum(row[check] for row in relevant)}/{len(relevant)}"
 
+    must_not_write = [row for row in rows if row["safety_applies"]]
+    pending_replies = [row for row in rows if row["reply_applies"] and not row["safety_applies"]]
+    no_write_replies = [row for row in must_not_write if row["reply_applies"]]
     by_category: dict[str, list[bool]] = {}
     for row in rows:
         by_category.setdefault(row["category"], []).append(row["passed"])
     model = f"`{meta['model_flag'].strip()}`" if meta["model_flag"] else DEFAULT_MODEL
+    rescored = meta.get("rescored")
     lines = [
         "# Live-model eval results",
         "",
@@ -241,16 +321,25 @@ def write_report(rows: list[dict], meta: dict, output: Path) -> None:
         "(`claude -p`), only the nine ops-platform MCP tools allowed",
         f"- Scenarios: {total} from `evals/scenarios.yaml`, one fresh platform seed each, "
         "approval mode on",
+    ]
+    if rescored:
+        lines.append(
+            f"- Re-scored on {rescored['date']} against {rescored['against']} using the "
+            "recorded replies; no new model run."
+        )
+    lines += [
         f"- **Overall: {passed}/{total} scenarios pass ({passed / total:.0%})**",
         "",
         "| Check | Scenarios passing |",
         "|---|---|",
-        f"| Tool selection: every required tool called | {tally('tools_ok')} |",
-        f"| Key arguments: required calls match | {tally('args_ok')} |",
+        f"| Tool selection: every required tool called | {tally('tools_ok', rows)} |",
+        f"| Key arguments: required calls match | {tally('args_ok', rows)} |",
         f"| No write went through (refusal, ambiguous, missing, invalid) "
-        f"| {tally('safety_ok', 'safety_applies')} |",
+        f"| {tally('safety_ok', must_not_write)} |",
         f"| Reply says the change is pending approval (write requests) "
-        f"| {tally('reply_ok', 'reply_applies')} |",
+        f"| {tally('reply_ok', pending_replies)} |",
+        f"| Reply names the problem or declines (refusal, ambiguous, missing, invalid) "
+        f"| {tally('reply_ok', no_write_replies)} |",
         "",
         "By category: "
         + ", ".join(f"{cat} {sum(v)}/{len(v)}" for cat, v in sorted(by_category.items())),
@@ -262,15 +351,21 @@ def write_report(rows: list[dict], meta: dict, output: Path) -> None:
     ]
     for row in rows:
         calls = "<br>".join(row["calls_md"]) or "(none)"
-        notes = "; ".join(row["notes"]).replace("|", "\\|") or ""
+        row_notes = "; ".join(row["notes"]).replace("|", "\\|") or ""
         verdict = "pass" if row["passed"] else "**fail**"
-        lines.append(f"| `{row['id']}` | {row['category']} | {verdict} | {calls} | {notes} |")
+        lines.append(f"| `{row['id']}` | {row['category']} | {verdict} | {calls} | {row_notes} |")
     lines += [
         "",
         "## How it was run",
         "",
         "```bash",
         "uv run python -m evals.run_model_eval" + meta["model_flag"],
+    ]
+    if rescored:
+        rescore_command = ["uv", "run", "python", "-m", "evals.run_model_eval"]
+        rescore_command += ["--rescore", "evals/last_run.json", "--reason", rescored["against"]]
+        lines += ["# re-scored later from the recorded replies:", shell_join(rescore_command)]
+    lines += [
         "```",
         "",
         "Each scenario is one headless Claude Code call of this shape (temporary paths "
@@ -284,7 +379,37 @@ def write_report(rows: list[dict], meta: dict, output: Path) -> None:
         "are in `evals/last_run.json`.",
         "",
     ]
-    output.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    return "\n".join(lines) + ("\n" + notes if notes else "")
+
+
+def write_report(rows: list[dict], meta: dict, output: Path, notes: str = "") -> None:
+    output.write_text(render_report(rows, meta, notes), encoding="utf-8", newline="\n")
+
+
+def write_log(rows: list[dict], meta: dict, path: Path, *private: Path) -> None:
+    """last_run.json: every row except its Markdown rendering, with local paths masked."""
+    scenarios_log = [{k: v for k, v in row.items() if k != "calls_md"} for row in rows]
+    text = json.dumps({"meta": meta, "scenarios": scenarios_log}, indent=2, ensure_ascii=False)
+    path.write_text(sanitize(text, *private), encoding="utf-8", newline="\n")
+
+
+def rescore(log_path: Path, output: Path, reason: str) -> None:
+    run_log = json.loads(log_path.read_text(encoding="utf-8"))
+    recorded = {row["id"]: row["passed"] for row in run_log["scenarios"]}
+    try:
+        rows = rescore_rows(run_log)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    meta = {**run_log["meta"], "rescored": {"date": date.today().isoformat(), "against": reason}}
+    for row in rows:
+        was = recorded[row["id"]]
+        change = "" if row["passed"] == was else f"  (was {'pass' if was else 'fail'})"
+        verdict = "PASS" if row["passed"] else "FAIL"
+        print(f"{verdict}  {row['id']}  {'; '.join(row['notes'])}{change}")
+    write_report(rows, meta, output, notes=existing_notes(output))
+    write_log(rows, meta, log_path)
+    passed = sum(row["passed"] for row in rows)
+    print(f"\n{passed}/{len(rows)} scenarios pass on re-score; no model was called; see {output}")
 
 
 def main() -> None:
@@ -295,10 +420,27 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=300, help="seconds per scenario")
     parser.add_argument("--budget", type=float, default=0.5, help="max USD per scenario")
     parser.add_argument("--output", type=Path, default=REPO_ROOT / "evals" / "RESULTS.md")
+    parser.add_argument(
+        "--rescore",
+        type=Path,
+        metavar="RUN_JSON",
+        help="apply the current checks to a recorded run such as evals/last_run.json and "
+        "rewrite it and the report; calls no model",
+    )
+    parser.add_argument(
+        "--reason",
+        default="the current checks",
+        help="with --rescore: what the run is re-scored against, for the report",
+    )
     args = parser.parse_args()
+    sys.stdout.reconfigure(encoding="utf-8")
+    if args.rescore:
+        if args.only or args.model:
+            parser.error("--rescore re-scores the recorded run as is; drop --only and --model")
+        rescore(args.rescore, args.output, args.reason)
+        return
     if shutil.which("claude") is None:
         raise SystemExit("Claude Code (`claude`) is not on PATH; the live eval needs it.")
-    sys.stdout.reconfigure(encoding="utf-8")
 
     today = date.today()
     scenarios = harness.load_scenarios(today=today)
@@ -337,52 +479,24 @@ def main() -> None:
             for scenario in scenarios:
                 asyncio.run(prepare(scenario, db_url, platform_url))
                 transcript = run_model(scenario, mcp_config, workdir, today.isoformat(), args)
-                result = harness.score(scenario, transcript.calls, transcript.reply)
-                notes = list(result.notes)
-                if transcript.error:
-                    notes.insert(0, f"run error: {transcript.error}")
-                passed = result.passed and transcript.error is None
                 cost += transcript.cost_usd
-                verdict = "PASS" if passed else "FAIL"
-                print(f"{verdict}  {scenario.id}  {'; '.join(notes)}", flush=True)
-                rows.append(
-                    {
-                        "id": scenario.id,
-                        "category": scenario.category,
-                        "prompt": scenario.prompt,
-                        "passed": passed,
-                        "tools_ok": result.tools_ok,
-                        "args_ok": result.args_ok,
-                        "safety_ok": result.safety_ok,
-                        "reply_ok": result.reply_ok,
-                        "safety_applies": scenario.no_successful_writes,
-                        "reply_applies": bool(scenario.reply_mentions),
-                        "notes": notes,
-                        "calls": [vars(c) for c in transcript.calls],
-                        "calls_md": [describe_call(c) for c in transcript.calls],
-                        "tool_results": transcript.results,
-                        "reply": transcript.reply,
-                    }
-                )
+                row = scenario_row(scenario, transcript)
+                verdict = "PASS" if row["passed"] else "FAIL"
+                print(f"{verdict}  {scenario.id}  {'; '.join(row['notes'])}", flush=True)
+                rows.append(row)
         finally:
             platform.terminate()
             platform.wait(timeout=10)
 
-        command = " ".join(
-            json.dumps(part) if (" " in part or "<" in part or not part) else part
-            for part in claude_command("<prompt>", "<tmp>/mcp.json", "<today>", args)
-        )
         meta = {
             "date": today.isoformat(),
             "claude_version": claude_version,
             "model_flag": f" --model {args.model}" if args.model else "",
-            "command": command,
+            "command": shell_join(claude_command("<prompt>", "<tmp>/mcp.json", "<today>", args)),
+            "total_cost_usd": round(cost, 4),
         }
         write_report(rows, meta, args.output)
-        scenarios_log = [{k: v for k, v in row.items() if k != "calls_md"} for row in rows]
-        run_log = {"meta": {**meta, "total_cost_usd": round(cost, 4)}, "scenarios": scenarios_log}
-        text = sanitize(json.dumps(run_log, indent=2, ensure_ascii=False), tmpdir, Path.home())
-        args.output.with_name("last_run.json").write_text(text, encoding="utf-8", newline="\n")
+        write_log(rows, meta, args.output.with_name("last_run.json"), tmpdir, Path.home())
     passed = sum(row["passed"] for row in rows)
     print(f"\n{passed}/{len(rows)} scenarios pass; approx cost ${cost:.2f}; see {args.output}")
 

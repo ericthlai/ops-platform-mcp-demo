@@ -244,6 +244,53 @@ def test_request_cannot_be_decided_twice(client):
     assert reject(client, change["id"], "too late").status_code == 409
 
 
+@pytest.mark.parametrize("second_decision", ["approve", "reject"])
+def test_concurrent_second_decision_is_refused(tmp_path, second_decision):
+    """Two reviewers open the same pending request; the first decision commits while the
+    second reviewer's session still holds its pending copy. The second decision must be
+    refused and apply nothing (without the atomic claim it created a duplicate task)."""
+    from fastapi import HTTPException
+    from sqlmodel import Session, create_engine, select
+
+    from platform_api import changes
+    from platform_api.audit import Caller
+    from platform_api.models import (
+        ApprovalDecision,
+        AuditEvent,
+        ChangeRequest,
+        ChangeRequestCreate,
+        RejectionDecision,
+        Task,
+    )
+    from platform_api.seed import seed
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'race.db').as_posix()}")
+    seed(engine)
+    with Session(engine) as session:
+        body = ChangeRequestCreate(action="create_task", payload={"project_id": 2, "title": "Deck"})
+        request_id = changes.submit_change_request(body, session, Caller("mcp-agent")).id
+    with Session(engine) as first, Session(engine) as second:
+        opened = second.get(ChangeRequest, request_id)  # keep it: the identity map is weak
+        assert opened.status == "pending"
+        changes.approve_change_request(request_id, ApprovalDecision(reviewer="reviewer-a"), first)
+        with pytest.raises(HTTPException) as refused:
+            if second_decision == "approve":
+                decision = ApprovalDecision(reviewer="reviewer-b")
+                changes.approve_change_request(request_id, decision, second)
+            else:
+                decision = RejectionDecision(reviewer="reviewer-b", reason="No")
+                changes.reject_change_request(request_id, decision, second)
+        assert refused.value.status_code == 409
+        assert refused.value.detail == f"Change request {request_id} is already approved"
+    with Session(engine) as check:
+        stored = check.get(ChangeRequest, request_id)
+        assert (stored.status, stored.decided_by) == ("approved", "reviewer-a")
+        assert len(check.exec(select(Task).where(Task.title == "Deck")).all()) == 1
+        events = check.exec(select(AuditEvent).where(AuditEvent.change_request_id == request_id))
+        assert [e.outcome for e in events] == ["pending", "approved"]
+    engine.dispose()
+
+
 def test_submitter_cannot_review_own_request(client):
     change = submit(client, "update_task", {"status": "done"}, target_id=4).json()
     response = approve(client, change["id"], reviewer="MCP-Agent")

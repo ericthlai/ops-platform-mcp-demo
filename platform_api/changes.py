@@ -1,19 +1,21 @@
 """Change requests: writes that wait for a human reviewer before they touch any record.
 
 ``POST /change-requests`` validates a change exactly as the direct write would (so bad
-ids and invalid values fail immediately with 404/422), snapshots the record an update
-will modify, and stores the request as pending. Nothing else changes.
+ids and invalid values fail immediately with 404/422; so does an update that would
+change nothing), snapshots the record an update will modify, and stores the request as
+pending. Nothing else changes.
 
 Decisions live under ``/admin/change-requests``. The MCP server never calls those
 routes, so an assistant using the MCP tools can submit and read requests but cannot
-approve or reject them. Approval re-checks the record: if it changed since submission
-the request is marked stale and nothing is applied.
+approve or reject them. A decision claims its request atomically, so two reviewers
+acting at once cannot both decide it. Approval re-checks the record: if it changed
+since submission the request is marked stale and nothing is applied.
 """
 
 from fastapi import APIRouter, HTTPException
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from sqlmodel import Session, SQLModel, select
+from sqlmodel import Session, SQLModel, select, update
 
 from . import audit, operations
 from .audit import CallerDep
@@ -184,7 +186,29 @@ def _open_for_review(session: Session, request_id: int, reviewer: str) -> Change
             status_code=403,
             detail=f"{reviewer!r} submitted change request {request_id} and cannot review it",
         )
+    _claim(session, change, reviewer)
     return change
+
+
+def _claim(session: Session, change: ChangeRequest, reviewer: str) -> None:
+    """Atomically take a pending request for this decision, or refuse with 409.
+
+    The status check above can read a copy that another reviewer is deciding at the same
+    moment. This conditional UPDATE matches only while the row is still pending in the
+    database and holds the write lock until this decision commits, so of two concurrent
+    decisions exactly one proceeds; the other applies nothing.
+    """
+    claimed = session.exec(
+        update(ChangeRequest)
+        .where(ChangeRequest.id == change.id, ChangeRequest.status == ChangeStatus.pending)
+        .values(decided_by=reviewer)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        session.refresh(change)
+        raise HTTPException(
+            status_code=409, detail=f"Change request {change.id} is already {change.status}"
+        )
 
 
 def _stale_reason(session: Session, change: ChangeRequest) -> str | None:

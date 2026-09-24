@@ -194,6 +194,8 @@ The design goal is that the assistant cannot approve its own changes:
   an assistant limited to the MCP tools can ask for a change but never make it happen.
 - **Four-eyes check.** The platform refuses a decision whose reviewer name matches the
   submitter (`mcp-agent`).
+- **One decision per request.** A decision claims its request with a conditional update
+  (`pending` only), so two reviewers acting at the same moment cannot both apply it.
 - **Stale requests.** An update snapshots the task when submitted. If the task changed
   before approval — another approved request, a direct edit — approval is refused with
   the fields that changed, and the request is marked `stale`.

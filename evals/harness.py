@@ -89,7 +89,7 @@ def mention_options(spec: list[str] | dict[str, list[str]]) -> list[str]:
 
 
 def _fold(text: str) -> str:
-    return text.replace("’", "'").casefold()
+    return text.replace("\u2019", "'").casefold()
 
 
 def mentions_any(reply: str, options: list[str]) -> bool:

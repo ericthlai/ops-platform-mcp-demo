@@ -121,8 +121,8 @@ def test_doing_nothing_fails_every_scenario():
         ({"any_of": ["can't", "cannot"]}, "I cannot delete projects.", True),
         ({"any_of": ["can't", "cannot"]}, "I couldn't delete it.", False),
         ({"any_of": ["Zelda"]}, "There is no employee named zelda.", True),
-        ({"any_of": ["can't"]}, "I can’t approve it.", True),  # typographic apostrophe
-        ({"any_of": ["can’t"]}, "I can't approve it.", True),
+        ({"any_of": ["can't"]}, "I can\u2019t approve it.", True),  # typographic apostrophe
+        ({"any_of": ["can\u2019t"]}, "I can't approve it.", True),
         ({"any_of": ["24"]}, "", False),
     ],
 )

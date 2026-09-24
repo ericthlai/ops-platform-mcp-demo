@@ -9,6 +9,7 @@ model run.
 """
 
 import asyncio
+import json
 from collections import Counter
 
 import httpx
@@ -121,3 +122,61 @@ def test_scorer_flags_wrong_arguments_and_unsafe_writes():
 )
 def test_value_matches(expected, actual, matches):
     assert harness.value_matches(expected, actual) is matches
+
+
+def test_live_runner_parses_claude_stream_json():
+    from evals.run_model_eval import parse_stream
+
+    events = [
+        {"type": "system", "subtype": "init", "model": "model-x"},
+        {
+            "type": "assistant",
+            "message": {
+                "model": "model-x",
+                "content": [
+                    {"type": "text", "text": "Checking."},
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "mcp__ops-platform__update_task_status",
+                        "input": {"task_id": "999", "status": "done"},
+                    },
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "is_error": True,
+                        "content": [{"type": "text", "text": "404: Task 999 not found"}],
+                    }
+                ]
+            },
+        },
+        {"type": "result", "result": "Task 999 does not exist.", "total_cost_usd": 0.01},
+    ]
+    transcript = parse_stream([json.dumps(e) for e in events] + ["not json"])
+    [call] = transcript.calls
+    assert call.tool == "update_task_status"
+    assert call.is_error is True
+    assert transcript.results == ["404: Task 999 not found"]
+    assert transcript.reply == "Task 999 does not exist."
+    assert transcript.models == ["model-x", "model-x"]
+    assert transcript.error is None
+
+
+def test_live_runner_strips_parent_session_variables(monkeypatch):
+    from evals.run_model_eval import child_env
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent")
+    monkeypatch.setenv("OPS_PLATFORM_URL", "http://127.0.0.1:8765")
+    env = child_env({"OPS_REQUIRE_APPROVAL": "true"})
+    assert "CLAUDECODE" not in env
+    assert "CLAUDE_CODE_SESSION_ID" not in env
+    assert env["OPS_PLATFORM_URL"] == "http://127.0.0.1:8765"
+    assert env["OPS_REQUIRE_APPROVAL"] == "true"

@@ -19,7 +19,8 @@ Output of [`scripts/demo_loop.py`](scripts/demo_loop.py) on a fresh seed (2026-0
 Each prompt, taken from the [DEMO.md](DEMO.md) script, is paired with the tool call a
 model makes for it and sent through the real MCP server over stdio; the arrow lines are
 the server's actual responses. The `$` lines are the human reviewer using the review CLI
-(excerpt: some steps and audit rows omitted, long lines wrapped).
+(excerpt: some steps, audit rows, and audit detail lines omitted; long lines wrapped;
+timestamps are UTC).
 
 ```text
 connected: 9 MCP tools, approval mode on
@@ -199,9 +200,10 @@ The design goal is that the assistant cannot approve its own changes:
 - **Stale requests.** An update snapshots the task when submitted. If the task changed
   before approval — another approved request, a direct edit — approval is refused with
   the fields that changed, and the request is marked `stale`.
-- **One transaction.** A write and its audit row commit together, so a change cannot
-  land without its audit record. Failed write-tool calls, which never reach a write,
-  are reported by the MCP server as `error` rows with the arguments the model sent.
+- **One transaction.** A platform write and its audit row commit together, so a change
+  cannot land without its audit record. Failed write-tool calls, which never reach a
+  write, are reported by the MCP server as `error` rows with the arguments the model
+  sent.
 - **Turning it off.** `OPS_REQUIRE_APPROVAL=false` restores direct writes (the original
   behavior); those writes are still audited as `applied`.
 
@@ -241,7 +243,10 @@ same variables through the client's environment configuration.
 ClickUp reads are available once a token is configured. The approval queue can only
 apply platform changes, so `create_task` and `update_task_status` fail closed in ClickUp
 mode until both `OPS_REQUIRE_APPROVAL=false` and `CLICKUP_WRITES_ENABLED=true` are set;
-successful ClickUp writes are then recorded in the platform audit log as `external`.
+successful ClickUp writes are then reported to the platform audit log as `external`
+(best effort; not transactional: the report is a separate call made after ClickUp
+accepts the write, so if that call fails, for example because the platform is down, the
+write stands and the MCP server only logs a warning).
 If a token can access multiple workspaces, `CLICKUP_TEAM_ID` is also required; the
 adapter will never choose the first workspace silently. Keep writes disabled for read-
 only demos. Task reads explicitly include closed work and paginate through the result

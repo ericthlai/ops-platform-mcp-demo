@@ -211,7 +211,28 @@ Browse the log with `review_changes.py audit` or `GET /audit-events`. There is n
 to edit or delete events. The boundary is the tool surface, not authentication — see
 [Known limitations](#known-limitations).
 
-### Task backends (the adapter pattern)
+## Evals
+
+[`evals/scenarios.yaml`](evals/scenarios.yaml) holds 27 requests a user might type —
+lookups, creates, updates, time logging, budget and utilization questions, change-request
+status, ambiguous names, missing records, invalid input, and requests the assistant must
+not carry out — each with the reference tool calls and the outcome they must produce.
+
+- **Deterministic layer (CI, no model).** `tests/test_eval_scenarios.py` sends each
+  scenario's reference calls through the MCP protocol into the real platform on a fresh
+  seed and checks the outcome: success, pending approval, a candidate list, or the
+  expected 404/422/ambiguity error. It also re-scores the recorded live run with the
+  current checks, so the published results cannot drift from the scorer.
+- **Live-model layer (local, not CI).** `uv run python -m evals.run_model_eval` gives each
+  prompt to Claude Code in headless mode with only these MCP tools allowed, then scores
+  tool selection, key arguments, whether any write went through when it should not
+  have, and whether the reply says the change is pending approval or, for a request it
+  must not carry out, names the problem or declines. The 2026-09-23 run passed 27/27 on
+  the original checks; re-scored from its recorded replies against stricter reply checks
+  (`--rescore`, no new model run), it passes 25/27. [evals/RESULTS.md](evals/RESULTS.md)
+  has the per-scenario table and what that score does not show.
+
+## Task backends (the adapter pattern)
 
 The three task tools (`list_tasks`, `create_task`, `update_task_status`) are
 backend-pluggable — same tool surface, different system of record:
@@ -260,31 +281,10 @@ before any retry. Automatic retries and idempotency are intentionally out of sco
 The MCP tool layer does not change when the backend becomes a real vendor API — only
 the adapter behind it does.
 
-## Evals
-
-[`evals/scenarios.yaml`](evals/scenarios.yaml) holds 27 requests a user might type —
-lookups, creates, updates, time logging, budget and utilization questions, change-request
-status, ambiguous names, missing records, invalid input, and requests the assistant must
-not carry out — each with the reference tool calls and the outcome they must produce.
-
-- **Deterministic layer (CI, no model).** `tests/test_eval_scenarios.py` sends each
-  scenario's reference calls through the MCP protocol into the real platform on a fresh
-  seed and checks the outcome: success, pending approval, a candidate list, or the
-  expected 404/422/ambiguity error. It also re-scores the recorded live run with the
-  current checks, so the published results cannot drift from the scorer.
-- **Live-model layer (local, not CI).** `uv run python -m evals.run_model_eval` gives each
-  prompt to Claude Code in headless mode with only these MCP tools allowed, then scores
-  tool selection, key arguments, whether any write went through when it should not
-  have, and whether the reply says the change is pending approval or, for a request it
-  must not carry out, names the problem or declines. The 2026-09-23 run passed 27/27 on
-  the original checks; re-scored from its recorded replies against stricter reply checks
-  (`--rescore`, no new model run), it passes 25/27. [evals/RESULTS.md](evals/RESULTS.md)
-  has the per-scenario table and what that score does not show.
-
 ## Tests and CI
 
 ```bash
-uv run pytest              # 216 tests: API, approvals, audit, MCP handlers, review CLI, ClickUp, scenario evals
+uv run pytest              # 243 tests: API, approvals, audit, MCP handlers, review CLI, ClickUp, scenario evals
 uv run ruff check .        # lint
 uv run ruff format --check .
 ```
@@ -317,13 +317,14 @@ This project was built by directing AI coding agents; the split below is deliber
 - OpenAI Codex (September 2026) wrote the ClickUp safety hardening, SECURITY.md, and
   the input-validation fixes for task updates and blank selectors.
 - Claude Code (September 2026) assembled this public snapshot and wrote
-  `scripts/demo_loop.py`.
-- Claude Code (September 2026) built the approval workflow, the audit log, the review
-  CLI, and the scenario evals, ran the live-model eval, and updated the demo and docs.
+  `scripts/demo_loop.py`, then built the approval workflow, audit log, review CLI, and
+  scenario evals, ran and later re-scored the live-model eval, and updated the demo and
+  docs.
 
 **What was verified**
 
-- The full test suite (216 tests) and ruff lint/format checks pass locally; CI reruns them on every pull request and every push to main.
+- The full test suite (243 tests) and ruff lint/format checks pass locally; CI reruns
+  them on every pull request and every push to main.
 - The demo transcript above is real output (excerpted) from running `scripts/demo_loop.py`
   against a freshly seeded platform.
 - The live-model eval results are from an actual run, re-scored later from its recorded

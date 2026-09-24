@@ -11,6 +11,12 @@ username), and the canonical statuses todo / in_progress / done translate to Cli
 "to do" / "in progress" / "complete". ClickUp task ids are alphanumeric strings.
 Requires CLICKUP_API_TOKEN; CLICKUP_TEAM_ID is optional when the token sees exactly
 one workspace.
+
+Approval: platform writes are queued as change requests while approval mode is on (the
+default; see approvals.py). The approval queue can only execute platform changes, so
+ClickUp writes are blocked in approval mode and need two explicit opt-ins:
+OPS_REQUIRE_APPROVAL=false and CLICKUP_WRITES_ENABLED=true. Successful ClickUp writes are
+then reported to the platform audit log as external writes.
 """
 
 import os
@@ -20,6 +26,8 @@ from typing import Any, Protocol
 import httpx
 
 from . import platform_client
+from .approvals import approval_required, submit_write
+from .audit import report_tool_call
 from .resolution import pick_by_name
 
 
@@ -74,10 +82,14 @@ class PlatformTaskBackend:
             payload["assignee_id"] = (await platform_client.resolve_employee(assignee))["id"]
         if due_date is not None:
             payload["due_date"] = due_date
-        return await platform_client.request("POST", "/tasks", json=payload)
+        arguments = {"project": project, "title": title, "assignee": assignee, "due_date": due_date}
+        return await submit_write("create_task", "create_task", payload, arguments)
 
     async def update_task_status(self, task_id: str, status: str) -> dict:
-        return await platform_client.request("PATCH", f"/tasks/{task_id}", json={"status": status})
+        arguments = {"task_id": task_id, "status": status}
+        return await submit_write(
+            "update_task_status", "update_task", {"status": status}, arguments, target_id=task_id
+        )
 
 
 # --- clickup ---------------------------------------------------------------------
@@ -104,6 +116,12 @@ class ClickUpTaskBackend:
     """Tasks served by the real ClickUp API (string ids, workspace lists as projects)."""
 
     def _require_writes_enabled(self) -> None:
+        if approval_required():
+            raise ValueError(
+                "Approval mode is on, and change requests can only apply platform changes, so "
+                "ClickUp writes are blocked. To write to ClickUp directly, set "
+                "OPS_REQUIRE_APPROVAL=false and CLICKUP_WRITES_ENABLED=true."
+            )
         if os.environ.get("CLICKUP_WRITES_ENABLED", "").strip().lower() != "true":
             raise ValueError(
                 "ClickUp writes are disabled by default. Set CLICKUP_WRITES_ENABLED=true "
@@ -329,7 +347,10 @@ class ClickUpTaskBackend:
             day = datetime.strptime(due_date, "%Y-%m-%d").replace(tzinfo=UTC)
             payload["due_date"] = int(day.timestamp() * 1000)
         created = await self._cu("POST", f"/list/{cu_list['id']}/task", json=payload)
-        return self._normalize_write_result(created, "task creation")
+        task = self._normalize_write_result(created, "task creation")
+        arguments = {"project": project, "title": title, "assignee": assignee, "due_date": due_date}
+        await report_tool_call("create_task", arguments, "external", result=task)
+        return task
 
     async def update_task_status(self, task_id: str, status: str) -> dict:
         self._require_writes_enabled()
@@ -348,7 +369,10 @@ class ClickUpTaskBackend:
             )
         cu_status = CANONICAL_TO_CLICKUP.get(status, status)
         updated = await self._cu("PUT", f"/task/{task_id}", json={"status": cu_status})
-        return self._normalize_write_result(updated, "status update")
+        task = self._normalize_write_result(updated, "status update")
+        arguments = {"task_id": task_id, "status": status}
+        await report_tool_call("update_task_status", arguments, "external", result=task)
+        return task
 
 
 BACKENDS: dict[str, type] = {"platform": PlatformTaskBackend, "clickup": ClickUpTaskBackend}

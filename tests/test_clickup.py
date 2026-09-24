@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from mcp_server import backends, server
+from mcp_server import backends, platform_client, server
 from mcp_server.backends import ClickUpTaskBackend, PlatformTaskBackend, get_task_backend
 
 DUE_MS = int(datetime(2026, 6, 17, tzinfo=UTC).timestamp() * 1000)
@@ -127,13 +127,34 @@ def run(coro):
     return asyncio.run(coro)
 
 
+class AuditSink:
+    """Stands in for the platform's POST /audit-events so no test reaches a real server."""
+
+    def __init__(self):
+        self.reports: list[dict] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/audit-events"
+        self.reports.append(json.loads(request.content))
+        return httpx.Response(201, json={})
+
+
 @pytest.fixture
-def clickup(monkeypatch):
+def audit_sink(monkeypatch):
+    sink = AuditSink()
+    monkeypatch.setattr(platform_client, "_transport", httpx.MockTransport(sink.handler))
+    return sink
+
+
+@pytest.fixture
+def clickup(monkeypatch, audit_sink):
     fake = FakeClickUp()
     monkeypatch.setattr(backends, "_cu_transport", httpx.MockTransport(fake.handler))
     monkeypatch.setenv("CLICKUP_API_TOKEN", "test-token")
     monkeypatch.delenv("CLICKUP_TEAM_ID", raising=False)
     monkeypatch.delenv("CLICKUP_WRITES_ENABLED", raising=False)
+    # ClickUp writes need approval mode off; the tests below cover the ClickUp gates.
+    monkeypatch.setenv("OPS_REQUIRE_APPROVAL", "false")
     return fake
 
 
@@ -323,6 +344,39 @@ def test_writes_are_disabled_by_default(backend, clickup):
     with pytest.raises(ValueError, match="ClickUp writes are disabled by default"):
         run(backend.update_task_status(task_id="abc123", status="done"))
     assert clickup.requests == []
+
+
+def test_writes_are_blocked_while_approval_mode_is_on(backend, clickup, monkeypatch):
+    monkeypatch.delenv("OPS_REQUIRE_APPROVAL")
+    monkeypatch.setenv("CLICKUP_WRITES_ENABLED", "true")
+    with pytest.raises(ValueError, match="Approval mode is on.*OPS_REQUIRE_APPROVAL=false"):
+        run(backend.create_task(project="Atlas", title="Queued?", assignee=None, due_date=None))
+    with pytest.raises(ValueError, match="Approval mode is on"):
+        run(backend.update_task_status(task_id="abc123", status="done"))
+    assert clickup.requests == []
+
+
+def test_blocked_write_through_the_tool_is_audited_as_error(clickup, audit_sink, monkeypatch):
+    monkeypatch.setenv("OPS_TASK_BACKEND", "clickup")
+    monkeypatch.delenv("OPS_REQUIRE_APPROVAL")
+    with pytest.raises(ValueError, match="Approval mode is on"):
+        run(server.update_task_status(task_id="abc123", status="done"))
+    [report] = audit_sink.reports
+    assert report["outcome"] == "error"
+    assert report["tool"] == "update_task_status"
+    assert report["arguments"] == {"task_id": "abc123", "status": "done"}
+
+
+def test_successful_writes_are_reported_as_external(backend, clickup, audit_sink, monkeypatch):
+    monkeypatch.setenv("CLICKUP_WRITES_ENABLED", "true")
+    task = run(backend.create_task(project="Atlas", title="Deck", assignee=None, due_date=None))
+    run(backend.update_task_status(task_id="abc123", status="done"))
+    created, updated = audit_sink.reports
+    assert created["tool"] == "create_task"
+    assert created["outcome"] == "external"
+    assert created["result"] == task
+    assert updated["tool"] == "update_task_status"
+    assert updated["result"]["status"] == "done"
 
 
 def test_create_task_maps_payload(backend, clickup, monkeypatch):

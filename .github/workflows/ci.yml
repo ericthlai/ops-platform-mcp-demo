@@ -23,4 +23,6 @@ jobs:
       - name: Format check
         run: uv run ruff format --check .
       - name: Test
-        run: uv run pytest
+        run: uv run pytest --ignore=tests/test_eval_scenarios.py
+      - name: Scenario evals (deterministic replay, no model)
+        run: uv run pytest tests/test_eval_scenarios.py

@@ -12,10 +12,19 @@ The three task tools are backend-pluggable: OPS_TASK_BACKEND=platform (default)
 serves them from the mock platform, OPS_TASK_BACKEND=clickup from the real ClickUp
 API (see backends.py and the README's Task backends section). All other tools are always
 platform-backed.
+
+Writes need human approval by default (approvals.py): write tools submit a change
+request and return it as pending. The server can submit and read change requests but
+has no tool or code path that approves them; a person does that with
+scripts/review_changes.py. Failed write calls are reported to the platform audit log
+(audit.py). OPS_REQUIRE_APPROVAL=false restores direct writes.
 """
 
 from mcp.server.fastmcp import FastMCP
 
+from . import approvals
+from .approvals import submit_write
+from .audit import audited_write
 from .backends import get_task_backend
 from .platform_client import request, resolve_employee, resolve_project
 
@@ -84,10 +93,25 @@ async def utilization_report(week: str | None = None) -> dict:
     return await request("GET", "/reports/utilization", params=params)
 
 
+@mcp.tool()
+async def get_change_request(change_request_id: int) -> dict:
+    """Check a change request returned by create_task, update_task_status, or log_time.
+    Use this when the user asks whether a change went through, or when you need the id of
+    a task that a request creates (it appears in `result` once approved). Returns the
+    status — pending (waiting for a human reviewer), approved (applied; `result` holds the
+    record as written), rejected (the reviewer's reason is in decision_note), stale
+    (refused because the record changed after submission), or failed — plus a summary and
+    next_step guidance. You cannot approve or reject requests: only a person can, outside
+    this assistant."""
+    return await approvals.get_change_request(change_request_id)
+
+
 # --- write tools ---------------------------------------------------------------
+# By default every write returns a pending change request; see approvals.py.
 
 
 @mcp.tool()
+@audited_write
 async def create_task(
     project: str,
     title: str,
@@ -97,9 +121,12 @@ async def create_task(
     """Create a new task on a project. Use this when asked to add a work item, to-do, or
     action item. `project` (required) and `assignee` (optional) accept a name, a unique
     name fragment, or an id; `due_date` is optional in YYYY-MM-DD format. New tasks
-    always start in the 'todo' state — use update_task_status afterwards if a different
-    status is needed. Returns the created task including its id; mention the id so the
-    user can refer to the task later. The task is created in the system selected by
+    always start in the 'todo' state. Writes need human approval by default: this submits
+    a change request and returns its change_request_id with status 'pending'. The task
+    does not exist until a person approves the request outside this assistant, so tell the
+    user it is pending approval — do not call it created and do not resubmit it; its id
+    appears in get_change_request once approved. (If approval mode is turned off, the
+    created task is returned directly.) The task goes to the system selected by
     OPS_TASK_BACKEND (the mock platform by default, or ClickUp)."""
     return await get_task_backend().create_task(
         project=project, title=title, assignee=assignee, due_date=due_date
@@ -107,18 +134,24 @@ async def create_task(
 
 
 @mcp.tool()
+@audited_write
 async def update_task_status(task_id: str, status: str) -> dict:
     """Move a task to a new status: todo, in_progress, or done. Use this when asked to
     start, finish, reopen, or otherwise progress a task. Requires the `task_id` — if you
     only know the task by title or assignee, call list_tasks first to find the id (ids
-    are numeric on the platform backend, alphanumeric strings on ClickUp). Returns the
-    full updated task so you can confirm the change took effect."""
+    are numeric on the platform backend, alphanumeric strings on ClickUp). Writes need
+    human approval by default: this submits a change request and returns its
+    change_request_id with status 'pending'; the task keeps its current status until a
+    person approves, and the request is refused as stale if the task changes first. Tell
+    the user the change is pending approval, not done. (If approval mode is turned off,
+    the updated task is returned directly.)"""
     if status not in TASK_STATUSES:
         raise ValueError(f"Invalid status {status!r}. Valid statuses: {', '.join(TASK_STATUSES)}")
     return await get_task_backend().update_task_status(task_id=task_id, status=status)
 
 
 @mcp.tool()
+@audited_write
 async def log_time(
     employee: str,
     project: str,
@@ -130,8 +163,11 @@ async def log_time(
     someone reports time worked or asks you to record effort. `employee` and `project`
     accept a name, a unique name fragment, or a numeric id; `date` is YYYY-MM-DD; `hours`
     must be greater than 0 and at most 24; `note` is an optional short description of the
-    work. Returns the created time entry including its id. Logged time immediately shows
-    up in get_project_hours and utilization_report."""
+    work. Writes need human approval by default: this submits a change request and
+    returns its change_request_id with status 'pending'; the hours count toward
+    get_project_hours and utilization_report only after a person approves it. Tell the
+    user the entry is pending approval. (If approval mode is turned off, the created time
+    entry is returned directly.)"""
     payload: dict = {
         "employee_id": (await resolve_employee(employee))["id"],
         "project_id": (await resolve_project(project))["id"],
@@ -140,7 +176,14 @@ async def log_time(
     }
     if note is not None:
         payload["note"] = note
-    return await request("POST", "/time-entries", json=payload)
+    arguments = {
+        "employee": employee,
+        "project": project,
+        "date": date,
+        "hours": hours,
+        "note": note,
+    }
+    return await submit_write("log_time", "create_time_entry", payload, arguments)
 
 
 if __name__ == "__main__":

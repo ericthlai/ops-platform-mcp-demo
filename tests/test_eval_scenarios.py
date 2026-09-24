@@ -240,6 +240,21 @@ def test_rescore_applies_current_checks_to_recorded_calls_and_replies():
         rescore_rows(run_log)
 
 
+def test_published_results_match_the_current_scorer():
+    # evals/last_run.json and RESULTS.md must say what the current checks make of the
+    # recorded replies, pass or fail. After changing a check, re-score (no model call):
+    #   uv run python -m evals.run_model_eval --rescore evals/last_run.json --reason ...
+    from evals.run_model_eval import existing_notes, render_report, rescore_rows
+
+    log = harness.SCENARIOS_PATH.with_name("last_run.json")
+    report = harness.SCENARIOS_PATH.with_name("RESULTS.md")
+    run_log = json.loads(log.read_text(encoding="utf-8"))
+    rows = rescore_rows(run_log)
+    assert [{k: v for k, v in r.items() if k != "calls_md"} for r in rows] == run_log["scenarios"]
+    rendered = render_report(rows, run_log["meta"], existing_notes(report))
+    assert report.read_text(encoding="utf-8") == rendered
+
+
 def test_live_runner_strips_parent_session_variables(monkeypatch):
     from evals.run_model_eval import child_env
 

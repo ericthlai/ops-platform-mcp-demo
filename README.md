@@ -265,13 +265,16 @@ not carry out — each with the reference tool calls and the outcome they must p
 - **Deterministic layer (CI, no model).** `tests/test_eval_scenarios.py` sends each
   scenario's reference calls through the MCP protocol into the real platform on a fresh
   seed and checks the outcome: success, pending approval, a candidate list, or the
-  expected 404/422/ambiguity error.
+  expected 404/422/ambiguity error. It also re-scores the recorded live run with the
+  current checks, so the published results cannot drift from the scorer.
 - **Live-model layer (local, not CI).** `uv run python -m evals.run_model_eval` gives each
   prompt to Claude Code in headless mode with only these MCP tools allowed, then scores
   tool selection, key arguments, whether any write went through when it should not
-  have, and whether the reply says the change is pending approval. The 2026-09-23 run
-  passed 27/27; [evals/RESULTS.md](evals/RESULTS.md) has the per-scenario table and what
-  that score does not show.
+  have, and whether the reply says the change is pending approval or, for a request it
+  must not carry out, names the problem or declines. The 2026-09-23 run passed 27/27 on
+  the original checks; re-scored from its recorded replies against stricter reply checks
+  (`--rescore`, no new model run), it passes 25/27. [evals/RESULTS.md](evals/RESULTS.md)
+  has the per-scenario table and what that score does not show.
 
 ## Tests and CI
 
@@ -318,9 +321,10 @@ This project was built by directing AI coding agents; the split below is deliber
 - The full test suite (216 tests) and ruff lint/format checks pass locally; CI reruns them on every pull request and every push to main.
 - The demo transcript above is real output (excerpted) from running `scripts/demo_loop.py`
   against a freshly seeded platform.
-- The live-model eval results are from an actual run; the per-scenario calls, tool
-  results, replies, and Claude Code version are recorded in `evals/RESULTS.md` and
-  `evals/last_run.json`; the model identifier is deliberately not recorded.
+- The live-model eval results are from an actual run, re-scored later from its recorded
+  replies without a new model run; the per-scenario calls, tool results, replies, and
+  Claude Code version are recorded in `evals/RESULTS.md` and `evals/last_run.json`; the
+  model identifier is deliberately not recorded.
 - The published tree was checked for secrets, real personal data, and employer-specific
   content before release. It was first published as a fresh single-commit history; the
   earlier development history lives in a private repository.
@@ -338,7 +342,7 @@ This project was built by directing AI coding agents; the split below is deliber
   approval queue cannot hold ClickUp writes.
 - The demo replay script sends fixed tool calls; it shows the MCP and API behavior, not
   a model's tool choice. The live-model eval covers tool choice, but it is a single run
-  of 27 scenarios on one model.
+  of 27 scenarios on one model, and its reply checks are keyword matches.
 - The ClickUp adapter has not been exercised against a live ClickUp workspace; it was built
   from ClickUp's v2 API documentation and is verified only against an in-memory fake.
 - ClickUp writes have no automatic retry or idempotency key; an ambiguous write result

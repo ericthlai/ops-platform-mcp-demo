@@ -217,7 +217,7 @@ def test_log_time_counts_only_after_approval(tools, client):
         tools.log_time(employee="Marcus", project="Orion", date="2026-06-10", hours=4, note="Fixes")
     )
     assert change["summary"] == (
-        "Log 4h for Marcus Webb on Orion Data Migration on 2026-06-10 (Fixes)"
+        "Log 4h for Marcus Webb on Orion Data Migration on 2026-06-10, note 'Fixes'"
     )
     assert run(tools.get_project_hours("Orion"))["logged_hours"] == seed_total
     approve(client, change["change_request_id"])

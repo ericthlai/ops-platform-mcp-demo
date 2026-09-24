@@ -30,6 +30,13 @@ class ReviewError(Exception):
     pass
 
 
+def one_line(value: object) -> str:
+    """Printable form of API text. Summaries, notes, and details can carry text an agent
+    supplied, so control characters (newlines, terminal escapes) are escaped repr-style
+    instead of printed: they cannot start a fake line or restyle the terminal."""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in str(value))
+
+
 def call(client: httpx.Client, method: str, path: str, **kwargs) -> dict | list:
     try:
         response = client.request(method, path, **kwargs)
@@ -43,7 +50,7 @@ def call(client: httpx.Client, method: str, path: str, **kwargs) -> dict | list:
             detail = response.json().get("detail", response.text)
         except ValueError:
             detail = response.text
-        raise ReviewError(f"HTTP {response.status_code}: {detail}")
+        raise ReviewError(f"HTTP {response.status_code}: {one_line(detail)}")
     return response.json()
 
 
@@ -52,37 +59,40 @@ def describe_result(change: dict) -> str:
     if not result:
         return ""
     kind = "time entry" if change["action"] == "create_time_entry" else "task"
-    status = f" (status {result['status']})" if "status" in result else ""
+    status = f" (status {one_line(result['status'])})" if "status" in result else ""
     return f" -> {kind} {result['id']}{status}"
 
 
 def format_change(change: dict) -> str:
     line = (
-        f"#{change['id']:<3} {change['status']:<9} {change['requested_at']}  "
-        f"by {change['requested_by']}  {change['summary']}"
+        f"#{change['id']:<3} {change['status']:<9} {one_line(change['requested_at'])}  "
+        f"by {one_line(change['requested_by'])}  {one_line(change['summary'])}"
     )
     if change.get("decided_by"):
-        line += f"\n     {change['status']} by {change['decided_by']} at {change['decided_at']}"
+        line += (
+            f"\n     {change['status']} by {one_line(change['decided_by'])}"
+            f" at {one_line(change['decided_at'])}"
+        )
         if change.get("decision_note"):
-            line += f": {change['decision_note']}"
+            line += f": {one_line(change['decision_note'])}"
     return line
 
 
 def format_event(event: dict) -> str:
     parts = [
         f"#{event['id']:<3}",
-        event["occurred_at"],
-        f"{event['actor']:<12}",
+        one_line(event["occurred_at"]),
+        f"{one_line(event['actor']):<12}",
         f"{event['outcome']:<8}",
-        event["tool"] or event["action"],
+        one_line(event["tool"] or event["action"]),
     ]
     if event.get("target"):
-        parts.append(event["target"])
+        parts.append(one_line(event["target"]))
     if event.get("change_request_id"):
         parts.append(f"request #{event['change_request_id']}")
     line = "  ".join(parts)
     if event.get("detail"):
-        line += f"\n     {event['detail']}"
+        line += f"\n     {one_line(event['detail'])}"
     return line
 
 
@@ -110,7 +120,8 @@ def run_command(args: argparse.Namespace, client: httpx.Client) -> str:
             f"/admin/change-requests/{args.id}/approve",
             json={"reviewer": reviewer},
         )
-        return f"approved #{change['id']}: {change['summary']}{describe_result(change)}"
+        summary = one_line(change["summary"])
+        return f"approved #{change['id']}: {summary}{describe_result(change)}"
     if args.command == "reject":
         change = call(
             client,
@@ -118,7 +129,7 @@ def run_command(args: argparse.Namespace, client: httpx.Client) -> str:
             f"/admin/change-requests/{args.id}/reject",
             json={"reviewer": reviewer, "reason": args.reason},
         )
-        return f"rejected #{change['id']}: {change['decision_note']}"
+        return f"rejected #{change['id']}: {one_line(change['decision_note'])}"
     params = {"limit": args.limit}
     if args.change_request is not None:
         params["change_request_id"] = args.change_request

@@ -83,7 +83,10 @@ def _describe(
             operations.get_employee_or_404(session, updates["assignee_id"])
         current = audit.snapshot(task)
         changes = ", ".join(
-            f"{field} {current[field]} -> {value}" for field, value in updates.items()
+            f"{field} {current[field]!r} -> {value!r}"
+            if field == "title"  # free text from the caller: quote and escape it
+            else f"{field} {current[field]} -> {value}"
+            for field, value in updates.items()
         )
         return f"Update task {task.id} {task.title!r}: {changes}", current
     assert isinstance(data, TimeEntryCreate)
@@ -93,7 +96,7 @@ def _describe(
         f"Log {data.hours:g}h for {employee.name} on {project.name} on {data.date.isoformat()}"
     )
     if data.note:
-        summary += f" ({data.note})"
+        summary += f", note {data.note!r}"
     return summary, None
 
 

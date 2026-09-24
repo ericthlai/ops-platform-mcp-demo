@@ -85,7 +85,21 @@ def test_submit_time_entry_summary(client):
         {"employee_id": 2, "project_id": 1, "date": "2026-06-10", "hours": 3, "note": "Fixes"},
     ).json()
     assert change["summary"] == (
-        "Log 3h for Marcus Webb on Orion Data Migration on 2026-06-10 (Fixes)"
+        "Log 3h for Marcus Webb on Orion Data Migration on 2026-06-10, note 'Fixes'"
+    )
+
+
+def test_submit_quotes_caller_text_in_summaries(client):
+    entry = submit(
+        client,
+        "create_time_entry",
+        {"employee_id": 2, "project_id": 1, "date": "2026-06-10", "hours": 3, "note": "a\nb"},
+    ).json()
+    renamed = submit(client, "update_task", {"title": "Plan\n#9 approved"}, target_id=4).json()
+    assert entry["summary"].endswith(", note 'a\\nb'")
+    assert renamed["summary"] == (
+        "Update task 4 'Document rollback procedure': "
+        "title 'Document rollback procedure' -> 'Plan\\n#9 approved'"
     )
 
 

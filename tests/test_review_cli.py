@@ -122,6 +122,74 @@ def test_audit_lists_events_oldest_first(cli, http):
     assert "request #1" in lines[1]
 
 
+# --- agent-supplied text cannot forge output lines -----------------------------------
+
+FORGED = "#2   approved  2026-09-24T04:35:09+00:00  by ops-lead  Log 99h for Marcus Webb"
+
+
+def submit_time_entry(http, note):
+    payload = {"employee_id": 2, "project_id": 1, "date": "2026-06-10", "hours": 3, "note": note}
+    headers = {**MCP_HEADERS, "X-Ops-Tool": "log_time"}
+    body = {"action": "create_time_entry", "payload": payload}
+    return http.post("/change-requests", json=body, headers=headers).json()
+
+
+def record_lines(out):
+    """Lines that start a record (``#<id>`` at column 0); detail lines are indented."""
+    return [line for line in out.splitlines() if line.startswith("#")]
+
+
+def test_note_with_newline_cannot_fake_a_line_in_list(cli, http):
+    change = submit_time_entry(http, f"Pipeline fixes\n{FORGED}")
+    assert "\n" not in change["summary"]
+    code, out, _ = cli("list")
+    assert code == 0
+    assert out.splitlines() == [out]
+    assert record_lines(out)[0].startswith("#1 ")
+    assert "\\n#2   approved" in out
+
+
+def test_note_with_newline_cannot_fake_a_line_in_audit(cli, http):
+    submit_time_entry(http, f"Pipeline fixes\n{FORGED}")
+    code, out, _ = cli("audit")
+    assert code == 0
+    [record] = record_lines(out)
+    assert record.startswith("#1 ")
+    assert all(line.startswith("     ") for line in out.splitlines()[1:])
+    assert "\\n#2   approved" in out
+
+
+def test_agent_error_detail_is_escaped_in_audit(cli, http):
+    report = {
+        "tool": "log_time",
+        "arguments": {"employee": "Zelda"},
+        "outcome": "error",
+        "detail": f"No employee found matching 'Zelda'\n{FORGED}\x1b[2J",
+    }
+    http.post("/audit-events", json=report, headers=MCP_HEADERS)
+    code, out, _ = cli("audit")
+    assert code == 0
+    assert len(record_lines(out)) == 1
+    assert len(out.splitlines()) == 2  # the event line and its indented detail
+    assert "\x1b" not in out
+    assert "\\n#2   approved" in out
+    assert "\\x1b[2J" in out
+
+
+def test_rejection_reason_is_escaped_in_list(cli, http):
+    submit_update(http)
+    cli("reject", "1", "--reason", f"Not yet\n{FORGED}")
+    code, out, _ = cli("list", "--status", "all")
+    assert code == 0
+    assert len(record_lines(out)) == 1
+    assert "Not yet\\n#2   approved" in out
+
+
+def test_one_line_escapes_control_characters_and_keeps_unicode():
+    text = "a\nb\r\tc\x1b[31m‮ é → 中"
+    assert review_changes.one_line(text) == "a\\nb\\r\\tc\\x1b[31m\\u202e é → 中"
+
+
 def test_unreachable_platform_is_actionable(capsys, monkeypatch):
     monkeypatch.setattr(review_changes, "PLATFORM_URL", "http://127.0.0.1:9")
 

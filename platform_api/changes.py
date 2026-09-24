@@ -82,6 +82,12 @@ def _describe(
         if updates.get("assignee_id") is not None:
             operations.get_employee_or_404(session, updates["assignee_id"])
         current = audit.snapshot(task)
+        if all(current[field] == value for field, value in updates.items()):
+            already = ", ".join(f"{field} {value!r}" for field, value in updates.items())
+            raise HTTPException(
+                status_code=422,
+                detail=f"No change: task {task.id} already has {already}. Nothing was queued.",
+            )
         changes = ", ".join(
             f"{field} {current[field]!r} -> {value!r}"
             if field == "title"  # free text from the caller: quote and escape it

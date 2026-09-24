@@ -144,6 +144,35 @@ def test_submit_rejects_malformed_targets(client, action, payload, target_id, me
     assert message in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "todo"},
+        {"status": "todo", "title": "Document rollback procedure"},
+    ],
+)
+def test_submit_update_that_changes_nothing_is_422(client, payload):
+    response = submit(client, "update_task", payload, target_id=4)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail.startswith("No change: task 4 already has ")
+    assert "status 'todo'" in detail
+    assert detail.endswith("Nothing was queued.")
+    assert client.get("/change-requests").json() == []
+    assert client.get("/audit-events").json() == []
+
+
+def test_submit_update_with_one_real_change_is_queued(client):
+    response = submit(
+        client,
+        "update_task",
+        {"status": "done", "title": "Document rollback procedure"},
+        target_id=4,
+    )
+    assert response.status_code == 201
+    assert response.json()["payload"] == {"status": "done", "title": "Document rollback procedure"}
+
+
 def test_rejected_submission_leaves_no_request(client):
     submit(client, "update_task", {"status": "done"}, target_id=999)
     assert client.get("/change-requests").json() == []

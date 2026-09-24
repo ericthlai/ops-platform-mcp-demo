@@ -272,6 +272,12 @@ def test_update_task_status_missing_task_fails_at_submission(tools, client):
     assert client.get("/change-requests").json() == []
 
 
+def test_update_task_status_to_current_status_fails_at_submission(tools, client):
+    with pytest.raises(ValueError, match="422: No change: task 4 already has status 'todo'"):
+        run(tools.update_task_status(task_id=4, status="todo"))
+    assert client.get("/change-requests").json() == []
+
+
 def test_log_time_invalid_hours_fails_at_submission(tools, client):
     with pytest.raises(ValueError, match="422"):
         run(tools.log_time(employee="Marcus Webb", project="Orion", date="2026-06-10", hours=30))

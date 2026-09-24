@@ -180,8 +180,9 @@ troubleshooting section — is in [DEMO.md](DEMO.md).
 
 Tools accept human-friendly names where reasonable and resolve them to ids internally;
 ambiguous or unknown names return errors that list the candidates so the model can
-self-correct. Write requests are validated when submitted, so a bad id or an invalid
-value fails immediately instead of waiting in the queue.
+self-correct. Write requests are validated when submitted, so a bad id, an invalid
+value, or an update that would change nothing fails immediately instead of waiting in
+the queue.
 
 ### Approvals and audit
 

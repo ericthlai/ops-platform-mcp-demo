@@ -392,7 +392,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
-    { name = "mcp", specifier = ">=1.9" },
+    { name = "mcp", specifier = ">=1.9,<2" },
     { name = "sqlmodel", specifier = ">=0.0.24" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]

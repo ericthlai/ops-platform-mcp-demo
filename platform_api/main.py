@@ -1,16 +1,19 @@
-"""FastAPI app exposing the platform's REST API over the four-table model."""
+"""FastAPI app exposing the platform's REST API: the four business tables, reports, and
+the governance routes (change requests, human review, audit log)."""
 
 import re
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, SQLModel, select
 
-from .db import create_db_and_tables, get_session
+from . import audit, changes, operations
+from .audit import Caller, CallerDep
+from .db import SessionDep, create_db_and_tables
 from .models import (
+    AuditOutcome,
     Employee,
     EmployeeCreate,
     Project,
@@ -33,22 +36,32 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ops Platform API", lifespan=lifespan)
-
-SessionDep = Annotated[Session, Depends(get_session)]
-
-
-def _get_employee_or_404(session: Session, employee_id: int) -> Employee:
-    employee = session.get(Employee, employee_id)
-    if employee is None:
-        raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
-    return employee
+app.include_router(changes.router)
+app.include_router(changes.admin_router)
+app.include_router(audit.router)
 
 
-def _get_project_or_404(session: Session, project_id: int) -> Project:
-    project = session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    return project
+def _audit_applied(
+    session: Session,
+    caller: Caller,
+    action: str,
+    target: str,
+    data: SQLModel,
+    record: SQLModel,
+    before: dict | None = None,
+) -> None:
+    """Audit a direct (non-queued) write in the same transaction as the write itself."""
+    audit.record(
+        session,
+        actor=caller.actor,
+        tool=caller.tool,
+        action=action,
+        outcome=AuditOutcome.applied,
+        target=target,
+        arguments=data.model_dump(mode="json", exclude_unset=True),
+        before=before,
+        after=audit.snapshot(record),
+    )
 
 
 # --- employees ---------------------------------------------------------------
@@ -60,9 +73,11 @@ def list_employees(session: SessionDep):
 
 
 @app.post("/employees", response_model=Employee, status_code=201)
-def create_employee(data: EmployeeCreate, session: SessionDep):
+def create_employee(data: EmployeeCreate, session: SessionDep, caller: CallerDep):
     employee = Employee.model_validate(data)
     session.add(employee)
+    session.flush()
+    _audit_applied(session, caller, "create_employee", f"employee {employee.id}", data, employee)
     session.commit()
     session.refresh(employee)
     return employee
@@ -70,7 +85,7 @@ def create_employee(data: EmployeeCreate, session: SessionDep):
 
 @app.get("/employees/{employee_id}", response_model=Employee)
 def get_employee(employee_id: int, session: SessionDep):
-    return _get_employee_or_404(session, employee_id)
+    return operations.get_employee_or_404(session, employee_id)
 
 
 # --- projects ----------------------------------------------------------------
@@ -82,9 +97,11 @@ def list_projects(session: SessionDep):
 
 
 @app.post("/projects", response_model=Project, status_code=201)
-def create_project(data: ProjectCreate, session: SessionDep):
+def create_project(data: ProjectCreate, session: SessionDep, caller: CallerDep):
     project = Project.model_validate(data)
     session.add(project)
+    session.flush()
+    _audit_applied(session, caller, "create_project", f"project {project.id}", data, project)
     session.commit()
     session.refresh(project)
     return project
@@ -92,13 +109,13 @@ def create_project(data: ProjectCreate, session: SessionDep):
 
 @app.get("/projects/{project_id}", response_model=Project)
 def get_project(project_id: int, session: SessionDep):
-    return _get_project_or_404(session, project_id)
+    return operations.get_project_or_404(session, project_id)
 
 
 @app.get("/projects/{project_id}/hours")
 def project_hours(project_id: int, session: SessionDep):
     """Logged hours vs budget for one project."""
-    project = _get_project_or_404(session, project_id)
+    project = operations.get_project_or_404(session, project_id)
     logged = session.exec(
         select(func.coalesce(func.sum(TimeEntry.hours), 0)).where(
             TimeEntry.project_id == project_id
@@ -136,28 +153,20 @@ def list_tasks(
 
 
 @app.post("/tasks", response_model=Task, status_code=201)
-def create_task(data: TaskCreate, session: SessionDep):
-    _get_project_or_404(session, data.project_id)
-    if data.assignee_id is not None:
-        _get_employee_or_404(session, data.assignee_id)
-    task = Task.model_validate(data)
-    session.add(task)
+def create_task(data: TaskCreate, session: SessionDep, caller: CallerDep):
+    task = operations.create_task(session, data)
+    _audit_applied(session, caller, "create_task", f"task {task.id}", data, task)
     session.commit()
     session.refresh(task)
     return task
 
 
 @app.patch("/tasks/{task_id}", response_model=Task)
-def update_task(task_id: int, data: TaskUpdate, session: SessionDep):
-    task = session.get(Task, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    updates = data.model_dump(exclude_unset=True)
-    if updates.get("assignee_id") is not None:
-        _get_employee_or_404(session, updates["assignee_id"])
-    for field, value in updates.items():
-        setattr(task, field, value)
-    session.add(task)
+def update_task(task_id: int, data: TaskUpdate, session: SessionDep, caller: CallerDep):
+    task = operations.get_task_or_404(session, task_id)
+    before = audit.snapshot(task)
+    operations.update_task(session, task, data)
+    _audit_applied(session, caller, "update_task", f"task {task.id}", data, task, before)
     session.commit()
     session.refresh(task)
     return task
@@ -167,11 +176,9 @@ def update_task(task_id: int, data: TaskUpdate, session: SessionDep):
 
 
 @app.post("/time-entries", response_model=TimeEntry, status_code=201)
-def create_time_entry(data: TimeEntryCreate, session: SessionDep):
-    _get_employee_or_404(session, data.employee_id)
-    _get_project_or_404(session, data.project_id)
-    entry = TimeEntry.model_validate(data)
-    session.add(entry)
+def create_time_entry(data: TimeEntryCreate, session: SessionDep, caller: CallerDep):
+    entry = operations.create_time_entry(session, data)
+    _audit_applied(session, caller, "create_time_entry", f"time entry {entry.id}", data, entry)
     session.commit()
     session.refresh(entry)
     return entry

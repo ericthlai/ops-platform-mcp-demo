@@ -8,7 +8,7 @@ the platform, the MCP server, and the model all run locally.
 
     uv run python -m evals.run_model_eval                 # all scenarios
     uv run python -m evals.run_model_eval --only time-log-today invalid-hours
-    uv run python -m evals.run_model_eval --model sonnet  # any `claude --model` value
+    uv run python -m evals.run_model_eval --model <alias>  # any `claude --model` value
 
 Writes evals/RESULTS.md and evals/last_run.json (tool calls, results, and final replies).
 A full run makes one headless Claude Code call per scenario; --budget caps each call.
@@ -239,7 +239,7 @@ def write_report(rows: list[dict], meta: dict, output: Path) -> None:
         "# Live-model eval results",
         "",
         f"- Date: {meta['date']}",
-        f"- Model identifiers reported in Claude Code's stream-json output: {meta['models']}",
+        f"- Model: {meta['model_flag'] or 'Claude Code default setting'}",
         f"- Runner: Claude Code {meta['claude_version']} in headless mode "
         "(`claude -p`), only the nine ops-platform MCP tools allowed",
         f"- Scenarios: {total} from `evals/scenarios.yaml`, one fresh platform seed each, "
@@ -378,7 +378,6 @@ def main() -> None:
         )
         meta = {
             "date": today.isoformat(),
-            "models": ", ".join(f"`{m}`" for m in sorted(models)) or "(none reported)",
             "claude_version": claude_version,
             "model_flag": f" --model {args.model}" if args.model else "",
             "command": command,

@@ -294,7 +294,7 @@ This project was built by directing AI coding agents; the split below is deliber
   only over HTTP, and a real vendor adapter only after the tool surface was stable.
 - The tool-design rules the agents had to follow: descriptions written for a model,
   names resolved to ids, ambiguity returned as an error listing candidates, write tools
-  returning the changed record.
+  returning the changed record (with approval on, the pending change request).
 - The safety posture for the vendor adapter: ClickUp writes off by default and no
   silent choice of workspace.
 - Change discipline: every code change landed as a branch and pull request with CI.

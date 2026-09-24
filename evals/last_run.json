@@ -1,7 +1,6 @@
 {
   "meta": {
     "date": "2026-09-23",
-    "models": "`claude-opus-5-5`, `claude-opus-5-5[1m]`",
     "claude_version": "2.1.281",
     "model_flag": "",
     "command": "claude -p \"<prompt>\" --output-format stream-json --verbose --mcp-config \"<tmp>/mcp.json\" --strict-mcp-config --tools \"\" --allowedTools mcp__ops-platform__list_employees,mcp__ops-platform__list_projects,mcp__ops-platform__list_tasks,mcp__ops-platform__get_project_hours,mcp__ops-platform__utilization_report,mcp__ops-platform__get_change_request,mcp__ops-platform__create_task,mcp__ops-platform__update_task_status,mcp__ops-platform__log_time --permission-prompts none --no-session-persistence --setting-sources \"\" --append-system-prompt \"You are an operations assistant for a small consulting firm. You work through the ops-platform MCP tools. Reply to the user in English. Today's date is <today>.\" --max-budget-usd 0.5",

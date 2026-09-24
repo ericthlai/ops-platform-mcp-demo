@@ -23,7 +23,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -64,7 +63,6 @@ class Transcript:
     calls: list[harness.ObservedCall] = field(default_factory=list)
     results: list[str] = field(default_factory=list)
     reply: str = ""
-    models: list[str] = field(default_factory=list)
     cost_usd: float = 0.0
     error: str | None = None
 
@@ -113,13 +111,8 @@ def parse_stream(lines: list[str]) -> Transcript:
         except json.JSONDecodeError:
             continue
         kind = event.get("type")
-        if kind == "system" and event.get("subtype") == "init":
-            transcript.models.append(event.get("model", ""))
-        elif kind == "assistant":
-            message = event.get("message", {})
-            if message.get("model"):
-                transcript.models.append(message["model"])
-            for block in message.get("content", []):
+        if kind == "assistant":
+            for block in event.get("message", {}).get("content", []):
                 if block.get("type") == "tool_use":
                     name = block["name"].removeprefix(TOOL_PREFIX)
                     call = harness.ObservedCall(name, block.get("input") or {})
@@ -335,7 +328,7 @@ def main() -> None:
         )
         reseed(db_url)
         platform = start_platform(db_url, args.port)
-        rows, models, cost = [], Counter(), 0.0
+        rows, cost = [], 0.0
         try:
             for scenario in scenarios:
                 asyncio.run(prepare(scenario, db_url, platform_url))
@@ -345,7 +338,6 @@ def main() -> None:
                 if transcript.error:
                     notes.insert(0, f"run error: {transcript.error}")
                 passed = result.passed and transcript.error is None
-                models.update(m for m in transcript.models if m)
                 cost += transcript.cost_usd
                 verdict = "PASS" if passed else "FAIL"
                 print(f"{verdict}  {scenario.id}  {'; '.join(notes)}", flush=True)

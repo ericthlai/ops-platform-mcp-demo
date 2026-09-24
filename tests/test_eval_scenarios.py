@@ -165,8 +165,8 @@ def test_live_runner_parses_claude_stream_json():
     assert call.is_error is True
     assert transcript.results == ["404: Task 999 not found"]
     assert transcript.reply == "Task 999 does not exist."
-    assert transcript.models == ["model-x", "model-x"]
     assert transcript.error is None
+    assert "model-x" not in repr(transcript)  # the stream's model identifier is not kept
 
 
 def test_live_runner_strips_parent_session_variables(monkeypatch):

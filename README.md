@@ -284,7 +284,7 @@ the adapter behind it does.
 ## Tests and CI
 
 ```bash
-uv run pytest              # 254 tests: API, approvals, audit, MCP handlers, review CLI, ClickUp, scenario evals
+uv run pytest              # 268 tests: API, approvals, audit, MCP handlers, review CLI, ClickUp, scenario evals
 uv run ruff check .        # lint
 uv run ruff format --check .
 ```
@@ -323,7 +323,7 @@ This project was built by directing AI coding agents; the split below is deliber
 
 **What was verified**
 
-- The full test suite (254 tests) and ruff lint/format checks pass locally; CI reruns
+- The full test suite (268 tests) and ruff lint/format checks pass locally; CI reruns
   them on every pull request and every push to main.
 - The demo transcript above is real output (excerpted) from running `scripts/demo_loop.py`
   against a freshly seeded platform.

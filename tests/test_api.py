@@ -7,7 +7,9 @@ hardcoded, so editing the seed dataset doesn't silently break unrelated tests.
 from datetime import date
 
 import pytest
+from fastapi.testclient import TestClient
 
+from platform_api.main import app
 from platform_api.seed import EMPLOYEES, PROJECTS, TASKS, TIME_ENTRIES
 
 
@@ -250,3 +252,52 @@ def test_utilization_bad_week_format_422(client):
 
 def test_utilization_invalid_week_number_422(client):
     assert client.get("/reports/utilization", params={"week": "2026-W60"}).status_code == 422
+
+
+# --- out-of-range numbers ----------------------------------------------------
+
+HUGE = 2**64
+
+
+@pytest.fixture
+def http_client(session_override):
+    """Like `client`, but turns unhandled server errors into 500 responses (as uvicorn
+    would) instead of re-raising them into the test."""
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", f"/employees/{HUGE}", None),
+        ("GET", f"/projects/{HUGE}", None),
+        ("GET", f"/projects/{HUGE}/hours", None),
+        ("GET", f"/tasks?project_id={HUGE}", None),
+        ("GET", f"/change-requests/{HUGE}", None),
+        ("GET", f"/audit-events?change_request_id={HUGE}", None),
+        ("PATCH", f"/tasks/{HUGE}", {"status": "done"}),
+        ("POST", "/tasks", {"project_id": HUGE, "title": "Huge project"}),
+        (
+            "POST",
+            "/time-entries",
+            {"employee_id": HUGE, "project_id": 1, "date": "2026-06-10", "hours": 1},
+        ),
+        ("POST", f"/admin/change-requests/{HUGE}/approve", {"reviewer": "reviewer-a"}),
+    ],
+)
+def test_out_of_range_numbers_are_422_not_500(http_client, method, path, body):
+    response = http_client.request(method, path, json=body)
+    assert response.status_code == 422
+    assert "outside the supported range" in response.json()["detail"]
+
+
+def test_utilization_last_week_of_year_9999_is_422(client):
+    response = client.get("/reports/utilization", params={"week": "9999-W52"})
+    assert response.status_code == 422
+    assert "not a valid ISO week" in response.json()["detail"]
+    assert client.get("/reports/utilization", params={"week": "9999-W51"}).status_code == 200
+
+
+@pytest.mark.parametrize("week", ["2026-W24\n", "\u0662\u0660\u0662\u0666-W\u0662\u0664"])
+def test_utilization_rejects_trailing_newline_and_non_ascii_digits(client, week):
+    assert client.get("/reports/utilization", params={"week": week}).status_code == 422

@@ -5,7 +5,9 @@ change exactly once, refuse stale or self-reviewed requests, and leave an audit 
 """
 
 import pytest
+from fastapi.testclient import TestClient
 
+from platform_api.main import app
 from platform_api.seed import TASKS
 
 MCP_HEADERS = {"X-Ops-Actor": "mcp-agent", "X-Ops-Tool": "create_task"}
@@ -394,3 +396,10 @@ def test_reject_requires_reason(client):
     )
     assert response.status_code == 422
     assert reject(client, change["id"], "   ").status_code == 422
+
+
+def test_submit_out_of_range_target_id_is_422_not_500(session_override):
+    lenient = TestClient(app, raise_server_exceptions=False)
+    response = submit(lenient, "update_task", {"status": "done"}, target_id=2**64)
+    assert response.status_code == 422
+    assert lenient.get("/change-requests").json() == []

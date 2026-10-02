@@ -5,7 +5,9 @@ change exactly once, refuse stale or self-reviewed requests, and leave an audit 
 """
 
 import pytest
+from fastapi.testclient import TestClient
 
+from platform_api.main import app
 from platform_api.seed import TASKS
 
 MCP_HEADERS = {"X-Ops-Actor": "mcp-agent", "X-Ops-Tool": "create_task"}
@@ -123,6 +125,19 @@ def test_submit_invalid_hours_422_points_at_payload(client):
     assert response.status_code == 422
     [error] = response.json()["detail"]
     assert error["loc"] == ["body", "payload", "hours"]
+
+
+@pytest.mark.parametrize("title", ["", "   "])
+@pytest.mark.parametrize(
+    ("action", "payload", "target_id"),
+    [("create_task", {"project_id": 1}, None), ("update_task", {}, 1)],
+)
+def test_submit_blank_title_422_and_nothing_queued(client, action, payload, target_id, title):
+    response = submit(client, action, {**payload, "title": title}, target_id=target_id)
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert error["loc"] == ["body", "payload", "title"]
+    assert client.get("/change-requests").json() == []
 
 
 def test_submit_invalid_status_422(client):
@@ -381,3 +396,10 @@ def test_reject_requires_reason(client):
     )
     assert response.status_code == 422
     assert reject(client, change["id"], "   ").status_code == 422
+
+
+def test_submit_out_of_range_target_id_is_422_not_500(session_override):
+    lenient = TestClient(app, raise_server_exceptions=False)
+    response = submit(lenient, "update_task", {"status": "done"}, target_id=2**64)
+    assert response.status_code == 422
+    assert lenient.get("/change-requests").json() == []

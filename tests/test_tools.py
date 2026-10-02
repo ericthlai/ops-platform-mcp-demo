@@ -284,6 +284,16 @@ def test_log_time_invalid_hours_fails_at_submission(tools, client):
     assert client.get("/change-requests").json() == []
 
 
+@pytest.mark.parametrize("title", ["", "   "])
+def test_create_task_blank_title_fails_before_queueing(tools, client, title):
+    with pytest.raises(ValueError, match="title must not be blank"):
+        run(tools.create_task(project="Atlas", title=title))
+    assert client.get("/change-requests").json() == []
+    [event] = audit_log(client)
+    assert event["tool"] == "create_task"
+    assert event["outcome"] == "error"
+
+
 # --- audit of write calls ---------------------------------------------------------------
 
 

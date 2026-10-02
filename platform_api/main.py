@@ -5,7 +5,8 @@ import re
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, select
 
@@ -26,7 +27,7 @@ from .models import (
     TimeEntryCreate,
 )
 
-WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
+WEEK_RE = re.compile(r"([0-9]{4})-W([0-9]{2})")
 
 
 @asynccontextmanager
@@ -36,6 +37,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ops Platform API", lifespan=lifespan)
+
+
+@app.exception_handler(OverflowError)
+async def out_of_range_number(request: Request, exc: OverflowError):
+    # SQLite integers are 64-bit: an id beyond that range raises OverflowError when bound
+    # to a query. Report it as a client error instead of a 500.
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "A number in the request is outside the supported range"},
+    )
+
+
 app.include_router(changes.router)
 app.include_router(changes.admin_router)
 app.include_router(audit.router)
@@ -187,28 +200,30 @@ def create_time_entry(data: TimeEntryCreate, session: SessionDep, caller: Caller
 # --- reports -----------------------------------------------------------------
 
 
-def _parse_week(week: str | None) -> tuple[str, date]:
-    """Resolve an ISO-week string like '2026-W24' (default: current week) to its Monday."""
+def _parse_week(week: str | None) -> tuple[str, date, date]:
+    """Resolve an ISO-week string like '2026-W24' (default: current week) to its Monday
+    and Sunday."""
     if week is None:
         iso = date.today().isocalendar()
-        return f"{iso.year}-W{iso.week:02d}", date.fromisocalendar(iso.year, iso.week, 1)
-    match = WEEK_RE.match(week)
+        monday = date.fromisocalendar(iso.year, iso.week, 1)
+        return f"{iso.year}-W{iso.week:02d}", monday, monday + timedelta(days=6)
+    match = WEEK_RE.fullmatch(week)
     if match is None:
         raise HTTPException(
             status_code=422, detail=f"week must be an ISO week like 2026-W24, got {week!r}"
         )
     try:
         monday = date.fromisocalendar(int(match[1]), int(match[2]), 1)
-    except ValueError:
+        sunday = monday + timedelta(days=6)  # overflows for the last week of year 9999
+    except (ValueError, OverflowError):
         raise HTTPException(status_code=422, detail=f"{week!r} is not a valid ISO week") from None
-    return week, monday
+    return week, monday, sunday
 
 
 @app.get("/reports/utilization")
 def utilization_report(session: SessionDep, week: str | None = None):
     """Per-employee logged hours vs weekly capacity for one ISO week."""
-    label, monday = _parse_week(week)
-    sunday = monday + timedelta(days=6)
+    label, monday, sunday = _parse_week(week)
     logged_by_employee = dict(
         session.exec(
             select(TimeEntry.employee_id, func.sum(TimeEntry.hours))

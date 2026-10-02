@@ -125,6 +125,19 @@ def test_submit_invalid_hours_422_points_at_payload(client):
     assert error["loc"] == ["body", "payload", "hours"]
 
 
+@pytest.mark.parametrize("title", ["", "   "])
+@pytest.mark.parametrize(
+    ("action", "payload", "target_id"),
+    [("create_task", {"project_id": 1}, None), ("update_task", {}, 1)],
+)
+def test_submit_blank_title_422_and_nothing_queued(client, action, payload, target_id, title):
+    response = submit(client, action, {**payload, "title": title}, target_id=target_id)
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert error["loc"] == ["body", "payload", "title"]
+    assert client.get("/change-requests").json() == []
+
+
 def test_submit_invalid_status_422(client):
     response = submit(client, "update_task", {"status": "blocked"}, target_id=1)
     assert response.status_code == 422

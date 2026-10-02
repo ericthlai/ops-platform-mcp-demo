@@ -122,6 +122,20 @@ def test_create_task_missing_project_404(client):
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("title", ["", "   "])
+def test_create_task_blank_title_422(client, title):
+    before = client.get("/tasks").json()
+    response = client.post("/tasks", json={"project_id": 1, "title": title})
+    assert response.status_code == 422
+    assert client.get("/tasks").json() == before
+
+
+def test_create_task_strips_title_whitespace(client):
+    response = client.post("/tasks", json={"project_id": 1, "title": "  Deck  "})
+    assert response.status_code == 201
+    assert response.json()["title"] == "Deck"
+
+
 def test_list_tasks_filters(client):
     done = client.get("/tasks", params={"status": "done"}).json()
     assert len(done) == sum(1 for _, _, _, status, _ in TASKS if status == "done")
@@ -148,6 +162,13 @@ def test_patch_task_rejects_null_required_fields_without_changes(client, field):
     before = client.get("/tasks").json()
     response = client.patch("/tasks/1", json={field: None, "assignee_id": None})
     assert response.status_code == 422
+    assert client.get("/tasks").json() == before
+
+
+@pytest.mark.parametrize("title", ["", "   "])
+def test_patch_task_blank_title_422_without_changes(client, title):
+    before = client.get("/tasks").json()
+    assert client.patch("/tasks/1", json={"title": title}).status_code == 422
     assert client.get("/tasks").json() == before
 
 

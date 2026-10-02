@@ -128,6 +128,8 @@ async def create_task(
     appears in get_change_request once approved. (If approval mode is turned off, the
     created task is returned directly.) The task goes to the system selected by
     OPS_TASK_BACKEND (the mock platform by default, or ClickUp)."""
+    if not title.strip():
+        raise ValueError("title must not be blank")
     return await get_task_backend().create_task(
         project=project, title=title, assignee=assignee, due_date=due_date
     )

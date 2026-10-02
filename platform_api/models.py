@@ -93,13 +93,14 @@ class Task(TaskBase, table=True):
 
 
 class TaskCreate(TaskBase):
-    pass
+    # Request-only override: the table-backed TaskBase keeps its plain column type.
+    title: NonBlankStr
 
 
 class TaskUpdate(SQLModel):
     """Partial update for PATCH /tasks/{id}; only provided fields are applied."""
 
-    title: str | None = None
+    title: NonBlankStr | None = None
     status: TaskStatus | None = None
     assignee_id: int | None = None
     due_date: date | None = None
